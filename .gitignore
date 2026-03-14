@@ -1,0 +1,17 @@
+# Dependências Node
+node_modules/
+
+# Artefatos de compilação e setup (gerados pelos scripts)
+build/
+
+# Powers of Tau (arquivo grande, ~120-480 MB)
+*.ptau
+ptau/*.ptau
+
+# Variáveis de ambiente
+.env
+
+# Misc
+.DS_Store
+*.log
+npm-debug.log*

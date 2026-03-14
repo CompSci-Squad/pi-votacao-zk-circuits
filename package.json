@@ -1,0 +1,36 @@
+{
+  "name": "votacao-zk-circuits",
+  "version": "1.0.0",
+  "description": "Circuitos ZK-SNARK para sistema de votação eletrônica",
+  "scripts": {
+    "compile": "./scripts/01_compile.sh",
+    "setup": "./scripts/02_setup.sh",
+    "export-verifier": "./scripts/03_export_verifier.sh",
+    "test": "node scripts/04_test_proof.js",
+    "test:full": "mocha test/*.test.js"
+  },
+  "dependencies": {
+    "circomlibjs": "^0.1.7",
+    "circomlib": "^2.0.5",
+    "ffjavascript": "^0.2.63",
+    "snarkjs": "^0.7.4"
+  },
+  "devDependencies": {
+    "chai": "^4.3.7",
+    "mocha": "^10.2.0"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "zk-snarks",
+    "circom",
+    "plonk",
+    "voting",
+    "blockchain",
+    "poseidon",
+    "merkle-tree",
+    "brasil"
+  ],
+  "license": "MIT"
+}
