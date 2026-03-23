@@ -80,20 +80,23 @@ async function main() {
   const TEST_INDEX = 0;
   const voterId = voterIds[TEST_INDEX];
   const electionId = 1n;
+  const raceId = 1n;    // cargo (vinculado ao nullifier como sinal privado)
   const candidateId = 13n; // candidato número 13
 
   const { pathElements, pathIndices } = getMerkleProof(tree, TEST_INDEX);
-  const nullifier = poseidon([voterId, electionId]);
+  const nullifier = poseidon([voterId, electionId, raceId]);
 
   console.log("\nEleitor de teste:");
   console.log("  voter_id      :", voterId.toString(), "(CPF)");
   console.log("  election_id   :", electionId.toString());
+  console.log("  race_id       :", raceId.toString());
   console.log("  candidate_id  :", candidateId.toString());
   console.log("  nullifier_hash:", F.toString(nullifier));
 
   // ── Montar input para o circuito ──────────────────────────────────────────
   const input = {
     voter_id: voterId.toString(),
+    race_id: raceId.toString(),
     merkle_path: pathElements.map((x) => F.toString(x)),
     merkle_path_indices: pathIndices,
     merkle_root: F.toString(root),

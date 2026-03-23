@@ -84,17 +84,20 @@ function buildMerkleProof(tree, leafIndex) {
  * @param {BigInt[]}opts.voterIds
  * @param {number}  opts.voterIndex   – índice do eleitor na árvore
  * @param {bigint}  opts.electionId
+ * @param {bigint}  opts.raceId       – identificador do cargo (vinculado ao nullifier)
  * @param {bigint}  opts.candidateId
  * @returns {Object} input para snarkjs
  */
-function buildValidInput({ poseidon, F, tree, voterIds, voterIndex, electionId, candidateId }) {
+function buildValidInput({ poseidon, F, tree, voterIds, voterIndex, electionId, raceId, candidateId }) {
   const voterId = voterIds[voterIndex];
   const { pathElements, pathIndices } = buildMerkleProof(tree, voterIndex);
-  const nullifier = poseidon([voterId, electionId]);
+  // nullifier = Poseidon(voter_id, election_id, race_id) — um por (eleitor × cargo × eleição)
+  const nullifier = poseidon([voterId, electionId, raceId]);
   const root = tree[tree.length - 1][0];
 
   return {
     voter_id: voterId.toString(),
+    race_id: raceId.toString(),
     merkle_path: pathElements.map((x) => F.toString(x)),
     merkle_path_indices: pathIndices,
     merkle_root: F.toString(root),

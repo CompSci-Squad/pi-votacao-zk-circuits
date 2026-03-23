@@ -11,7 +11,10 @@ include "circomlib/circuits/mux1.circom";
  * Garante simultaneamente, sem revelar o voter_id:
  *   1. AUTORIZAÇÃO  – Poseidon(voter_id) pertence à Merkle tree de raiz merkle_root.
  *   2. INTEGRIDADE  – O hash da folha foi calculado corretamente pelo próprio circuito.
- *   3. UNICIDADE    – nullifier_hash === Poseidon(voter_id, election_id), impedindo voto duplo.
+ *   3. UNICIDADE    – nullifier_hash === Poseidon(voter_id, election_id, race_id), impedindo voto
+ *                     duplo dentro do mesmo cargo — um eleitor pode votar em cargos distintos.
+ *   4. VINCULAÇÃO   – race_id é sinal público, impossibilitando que um relayer reutilize uma
+ *                     prova gerada para cargo A submetendo-a ao cargo B.
  *
  * Parâmetros:
  *   depth – profundidade da árvore de Merkle (4 → suporta até 16 eleitores)
@@ -24,10 +27,17 @@ template VoterProof(depth) {
     signal input merkle_path_indices[depth];  // 0 = filho esquerdo, 1 = filho direito
 
     // ── Inputs públicos (enviados ao contrato Ethereum) ──────────────────────
+    // Ordem canônica — deve bater com IVerifier.sol e VotingContract.castVote():
+    //   pubSignals[0] = merkle_root
+    //   pubSignals[1] = nullifier_hash
+    //   pubSignals[2] = candidate_id
+    //   pubSignals[3] = election_id
+    //   pubSignals[4] = race_id
     signal input merkle_root;     // Raiz da árvore de eleitores autorizados
-    signal input nullifier_hash;  // Poseidon(voter_id, election_id) — anti-voto-duplo
+    signal input nullifier_hash;  // Poseidon(voter_id, election_id, race_id) — anti-voto-duplo
     signal input candidate_id;    // Candidato (0=branco, 999=nulo, ou número real)
     signal input election_id;     // Identificador único da eleição
+    signal input race_id;         // Identificador do cargo (ex.: 1=Presidente) — PÚBLICO
 
     // ── 1. Calcular voter_hash = Poseidon(voter_id) ──────────────────────────
     component leafHasher = Poseidon(1);
@@ -68,18 +78,33 @@ template VoterProof(depth) {
     merkle_root === levelHashes[depth];
 
     // ── 4–5. Calcular e verificar o nullifier ────────────────────────────────
-    component nullifierHasher = Poseidon(2);
+    // Fórmula: Poseidon(voter_id, election_id, race_id)
+    // Vincula o nullifier ao cargo específico — o mesmo eleitor pode votar em
+    // cargos distintos (race_id diferente) sem ser bloqueado como voto duplo.
+    component nullifierHasher = Poseidon(3);
     nullifierHasher.inputs[0] <== voter_id;
     nullifierHasher.inputs[1] <== election_id;
+    nullifierHasher.inputs[2] <== race_id;
 
     nullifier_hash === nullifierHasher.out;
 
-    // ── 6. candidate_id é incluído como público — registrado on-chain ────────
-    // Sem restrição de intervalo: permite 0 (branco), 999 (nulo) e qualquer número.
-    // A validação do candidato é responsabilidade do contrato inteligente.
+    // ── 6. Dummy constraints para sinais públicos sem outros usos ────────────
+    //
+    // candidate_id: a validação do intervalo (0=branco, 999=nulo, 1..N) é feita
+    // exclusivamente pelo contrato — o circuito aceita qualquer valor.
+    // Dummy constraint: sem isso, candidate_id ficaria under-constrained e um
+    // provador malicioso poderia alterar o candidato sem invalidar a prova.
     signal candidate_id_squared;
     candidate_id_squared <== candidate_id * candidate_id;
+
+    // race_id: vincula esta prova a um cargo específico. Sendo sinal público,
+    // o contrato pode verificar que raceId passado em castVote() bate com o
+    // raceId usado para gerar a prova — impedindo reutilização cross-cargo.
+    // Dummy constraint obrigatório para evitar under-constrained signal.
+    signal race_id_squared;
+    race_id_squared <== race_id * race_id;
 }
 
 // Instância principal com profundidade 4 (suporta até 16 eleitores)
-component main {public [merkle_root, nullifier_hash, candidate_id, election_id]} = VoterProof(4);
+// 5 sinais públicos: merkle_root, nullifier_hash, candidate_id, election_id, race_id
+component main {public [merkle_root, nullifier_hash, candidate_id, election_id, race_id]} = VoterProof(4);

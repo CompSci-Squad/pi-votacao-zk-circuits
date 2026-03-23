@@ -38,6 +38,7 @@ const VKEY_PATH = path.join(BUILD_DIR, "verification_key.json");
 
 const DEPTH = 4;
 const ELECTION_ID = 1n;
+const RACE_ID = 1n;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -98,6 +99,7 @@ describe("VoterProof – circuito ZK de votação", function () {
         poseidon, F, tree, voterIds,
         voterIndex: 0,
         electionId: ELECTION_ID,
+        raceId: RACE_ID,
         candidateId: 13n,
       });
 
@@ -113,6 +115,7 @@ describe("VoterProof – circuito ZK de votação", function () {
         poseidon, F, tree, voterIds,
         voterIndex: 0,
         electionId: ELECTION_ID,
+        raceId: RACE_ID,
         candidateId: 13n,
       });
 
@@ -130,11 +133,10 @@ describe("VoterProof – circuito ZK de votação", function () {
       // porém usando o merkle_path do índice 0 → root não bate
       const intruderVoterId = 99999999999n; // não está na árvore
       const { pathElements, pathIndices } = buildMerkleProof(tree, 0);
-      const nullifier = poseidon([intruderVoterId, ELECTION_ID]);
+      const nullifier = poseidon([intruderVoterId, ELECTION_ID, RACE_ID]);
 
       const input = {
-        voter_id: intruderVoterId.toString(),
-        merkle_path: pathElements.map((x) => F.toString(x)),
+        voter_id: intruderVoterId.toString(),        race_id: RACE_ID.toString(),        merkle_path: pathElements.map((x) => F.toString(x)),
         merkle_path_indices: pathIndices,
         merkle_root: F.toString(root),
         nullifier_hash: F.toString(nullifier),
@@ -160,10 +162,11 @@ describe("VoterProof – circuito ZK de votação", function () {
       const voterId = voterIds[0];
       // Usar o caminho do eleitor de índice 1 com o voter_id do índice 0
       const { pathElements: wrongPath, pathIndices: wrongIndices } = buildMerkleProof(tree, 1);
-      const nullifier = poseidon([voterId, ELECTION_ID]);
+      const nullifier = poseidon([voterId, ELECTION_ID, RACE_ID]);
 
       const input = {
         voter_id: voterId.toString(),
+        race_id: RACE_ID.toString(),
         merkle_path: wrongPath.map((x) => F.toString(x)),
         merkle_path_indices: wrongIndices,
         merkle_root: F.toString(root),
@@ -184,18 +187,19 @@ describe("VoterProof – circuito ZK de votação", function () {
 
   // ── 4. Nullifier incorreto ──────────────────────────────────────────────────
   describe("4. Nullifier incorreto", function () {
-    it("deve falhar quando nullifier_hash não corresponde a Poseidon(voter_id, election_id)", async function () {
+    it("deve falhar quando nullifier_hash não corresponde a Poseidon(voter_id, election_id, race_id)", async function () {
       if (!fs.existsSync(WASM_PATH)) return this.skip();
 
       const input = buildValidInput({
         poseidon, F, tree, voterIds,
         voterIndex: 0,
         electionId: ELECTION_ID,
+        raceId: RACE_ID,
         candidateId: 13n,
       });
 
       // Substituir pelo nullifier de um eleitor diferente
-      const wrongNullifier = poseidon([voterIds[1], ELECTION_ID]);
+      const wrongNullifier = poseidon([voterIds[1], ELECTION_ID, RACE_ID]);
       input.nullifier_hash = F.toString(wrongNullifier);
 
       let threw = false;
@@ -217,6 +221,7 @@ describe("VoterProof – circuito ZK de votação", function () {
         poseidon, F, tree, voterIds,
         voterIndex: 2,
         electionId: ELECTION_ID,
+        raceId: RACE_ID,
         candidateId: 0n, // branco
       });
 
@@ -232,6 +237,7 @@ describe("VoterProof – circuito ZK de votação", function () {
         poseidon, F, tree, voterIds,
         voterIndex: 2,
         electionId: ELECTION_ID,
+        raceId: RACE_ID,
         candidateId: 0n,
       });
 
@@ -249,6 +255,7 @@ describe("VoterProof – circuito ZK de votação", function () {
         poseidon, F, tree, voterIds,
         voterIndex: 3,
         electionId: ELECTION_ID,
+        raceId: RACE_ID,
         candidateId: 999n, // nulo
       });
 
@@ -264,11 +271,44 @@ describe("VoterProof – circuito ZK de votação", function () {
         poseidon, F, tree, voterIds,
         voterIndex: 3,
         electionId: ELECTION_ID,
+        raceId: RACE_ID,
         candidateId: 999n,
       });
 
       const ok = await proveAndVerify(input);
       expect(ok).to.equal(true);
+    });
+  });
+
+  // ── 7. Isolamento por race_id ──────────────────────────────────────────────
+  describe("7. Isolamento por race_id", function () {
+    it("deve produzir nullifiers diferentes para race_id=1 e race_id=2 com mesmo voter_id", async function () {
+      if (!fs.existsSync(WASM_PATH)) return this.skip();
+
+      const inputRace1 = buildValidInput({
+        poseidon, F, tree, voterIds,
+        voterIndex: 0,
+        electionId: ELECTION_ID,
+        raceId: 1n,
+        candidateId: 13n,
+      });
+
+      const inputRace2 = buildValidInput({
+        poseidon, F, tree, voterIds,
+        voterIndex: 0,
+        electionId: ELECTION_ID,
+        raceId: 2n,
+        candidateId: 13n,
+      });
+
+      expect(inputRace1.nullifier_hash).to.not.equal(
+        inputRace2.nullifier_hash,
+        "Nullifiers de race_id distintos devem diferir para prevenir duplo vôto entre cargos"
+      );
+
+      // Ambas as witnesses devem ser válidas individualmente
+      await calculateWitness(inputRace1);
+      await calculateWitness(inputRace2);
     });
   });
 });
