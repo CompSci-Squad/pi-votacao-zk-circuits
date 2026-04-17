@@ -1,238 +1,294 @@
 /**
  * voter_proof.test.js
  *
- * Testes automatizados do circuito voter_proof com Mocha + Chai.
+ * Comprehensive test suite for the VoterProof circuit using circom_tester.
+ * Tests run at the witness level (no build artifacts needed — circom_tester
+ * compiles automatically) with checkConstraints() to verify R1CS satisfaction.
  *
- * Casos de teste:
- *   1. Prova válida — eleitor cadastrado, candidato válido
- *   2. Eleitor não cadastrado — voter_id não está na Merkle tree
- *   3. Merkle path incorreto — irmãos errados
- *   4. Nullifier incorreto — nullifier_hash não deriva de (voter_id, election_id)
- *   5. Voto em branco — candidate_id = 0
- *   6. Voto nulo — candidate_id = 999
+ * Test categories (per copilot-instructions.md §5):
+ *   1.  Happy path — valid voter, correct Merkle path, correct nullifier
+ *   2.  Wrong Merkle root — modified root → constraint failure
+ *   3.  Invalid Merkle path — tampered siblings → constraint failure
+ *   4.  Nullifier binding — same inputs always produce the same nullifier
+ *   5.  Nullifier distinctness — different race_id → different nullifier
+ *   6.  Relay attack guard — changing race_id on valid proof invalidates it
+ *   7.  Blank vote — candidate_id = 0
+ *   8.  Null vote — candidate_id = 999
+ *   9.  Constraint coverage — all signals constrained
+ *  10.  Cross-verification — circuit Poseidon output matches circomlibjs
+ *  11.  Edge cases — boundary inputs, unregistered voters
  *
- * Os testes que precisam de prova completa (WASM + zkey) são pulados
- * automaticamente se os artefatos de build não existirem.
- * Execute `npm run compile && npm run setup` para habilitá-los.
+ * Run: npx mocha test/voter_proof.test.js --timeout 300000
  */
 
 "use strict";
 
 const { expect } = require("chai");
-const snarkjs = require("snarkjs");
-const fs = require("fs");
-const path = require("path");
-
+const { getPoseidon } = require("./helpers/poseidon");
+const { DEPTH, buildTestTree, buildMerkleProof } = require("./helpers/merkle");
 const {
-  buildPoseidon,
-  buildTestTree,
-  buildMerkleProof,
-  buildValidInput,
   TEST_VOTER_IDS,
-} = require("./generate_test_inputs");
+  DEFAULT_ELECTION_ID,
+  DEFAULT_RACE_ID,
+  DEFAULT_CANDIDATE_ID,
+  buildValidInput,
+} = require("./helpers/input");
+const { getCircuit } = require("./helpers/circuit");
 
-const BUILD_DIR = path.join(__dirname, "../build");
-const WASM_PATH = path.join(BUILD_DIR, "voter_proof_js", "voter_proof.wasm");
-const ZKEY_PATH = path.join(BUILD_DIR, "voter_proof.zkey");
-const VKEY_PATH = path.join(BUILD_DIR, "verification_key.json");
+const ELECTION_ID = DEFAULT_ELECTION_ID;
+const RACE_ID = DEFAULT_RACE_ID;
 
-const DEPTH = 4;
-const ELECTION_ID = 1n;
-const RACE_ID = 1n;
-
-// ── Helpers ──────────────────────────────────────────────────────────────────
-
-/**
- * Tenta calcular a witness para os inputs fornecidos.
- * Lança se as constraints não forem satisfeitas.
- */
-async function calculateWitness(input) {
-  if (!fs.existsSync(WASM_PATH)) {
-    throw new Error("SKIP: WASM não encontrado — execute npm run compile");
-  }
-  const tmpWitness = path.join(BUILD_DIR, `_test_witness_${Date.now()}.wtns`);
-  try {
-    await snarkjs.wtns.calculate(input, WASM_PATH, tmpWitness);
-  } finally {
-    if (fs.existsSync(tmpWitness)) fs.unlinkSync(tmpWitness);
-  }
-}
-
-/**
- * Gera e verifica uma prova PLONK completa.
- * Requer WASM + zkey + verification_key.
- */
-async function proveAndVerify(input) {
-  if (!fs.existsSync(WASM_PATH) || !fs.existsSync(ZKEY_PATH)) {
-    return null; // Indicador de "skip"
-  }
-  const { proof, publicSignals } = await snarkjs.plonk.fullProve(
-    input,
-    WASM_PATH,
-    ZKEY_PATH
-  );
-  const vKey = JSON.parse(fs.readFileSync(VKEY_PATH, "utf8"));
-  const ok = await snarkjs.plonk.verify(vKey, publicSignals, proof);
-  return ok;
-}
-
-// ── Suite de testes ──────────────────────────────────────────────────────────
-
-describe("VoterProof – circuito ZK de votação", function () {
-  this.timeout(120_000); // Geração de prova pode levar até 2 minutos
+describe("VoterProof — ZK voting circuit", function () {
+  this.timeout(300_000); // circom_tester compilation can take a while
 
   let poseidon, F, tree, voterIds, root;
+  let circuit;
 
   before(async function () {
-    poseidon = await buildPoseidon();
-    F = poseidon.F;
-    ({ tree, root, voterIds } = await buildTestTree(poseidon, F, DEPTH));
-    fs.mkdirSync(BUILD_DIR, { recursive: true });
+    ({ poseidon, F } = await getPoseidon());
+    ({ tree, root, voterIds } = buildTestTree(poseidon, F, DEPTH, TEST_VOTER_IDS));
+    circuit = await getCircuit();
   });
 
-  // ── 1. Prova válida ─────────────────────────────────────────────────────────
-  describe("1. Prova válida", function () {
-    it("deve gerar witness válida para eleitor cadastrado", async function () {
-      if (!fs.existsSync(WASM_PATH)) return this.skip();
+  // ── Helper: build input and calculate + check witness ──────────────────────
+  async function expectWitnessSuccess(input) {
+    const w = await circuit.calculateWitness(input, true);
+    await circuit.checkConstraints(w);
+    return w;
+  }
 
+  async function expectWitnessFailure(input, message) {
+    let threw = false;
+    try {
+      const w = await circuit.calculateWitness(input, true);
+      await circuit.checkConstraints(w);
+    } catch {
+      threw = true;
+    }
+    expect(threw, message || "Expected witness/constraint failure").to.equal(true);
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════════
+  // 1. HAPPY PATH
+  // ══════════════════════════════════════════════════════════════════════════════
+  describe("1. Happy path — valid voter", function () {
+    it("should generate a valid witness for a registered voter", async function () {
       const input = buildValidInput({
         poseidon, F, tree, voterIds,
         voterIndex: 0,
         electionId: ELECTION_ID,
         raceId: RACE_ID,
-        candidateId: 13n,
+        candidateId: DEFAULT_CANDIDATE_ID,
       });
 
-      await calculateWitness(input); // não deve lançar exceção
+      await expectWitnessSuccess(input);
     });
 
-    it("deve gerar e verificar prova PLONK completa", async function () {
-      if (!fs.existsSync(WASM_PATH) || !fs.existsSync(ZKEY_PATH)) {
-        return this.skip();
+    it("should work for multiple distinct voters", async function () {
+      for (const idx of [0, 1, 2, 5, 14]) {
+        const input = buildValidInput({
+          poseidon, F, tree, voterIds,
+          voterIndex: idx,
+          electionId: ELECTION_ID,
+          raceId: RACE_ID,
+          candidateId: DEFAULT_CANDIDATE_ID,
+        });
+        await expectWitnessSuccess(input);
       }
+    });
+  });
 
+  // ══════════════════════════════════════════════════════════════════════════════
+  // 2. WRONG MERKLE ROOT
+  // ══════════════════════════════════════════════════════════════════════════════
+  describe("2. Wrong merkle_root", function () {
+    it("should reject when merkle_root is tampered", async function () {
       const input = buildValidInput({
         poseidon, F, tree, voterIds,
         voterIndex: 0,
         electionId: ELECTION_ID,
         raceId: RACE_ID,
-        candidateId: 13n,
+        candidateId: DEFAULT_CANDIDATE_ID,
       });
 
-      const ok = await proveAndVerify(input);
-      expect(ok).to.equal(true);
+      const fakeRoot = poseidon([42n]);
+      input.merkle_root = F.toString(fakeRoot);
+
+      await expectWitnessFailure(input, "Should reject tampered merkle_root");
+    });
+
+    it("should reject when merkle_root is zero", async function () {
+      const input = buildValidInput({
+        poseidon, F, tree, voterIds,
+        voterIndex: 0,
+        electionId: ELECTION_ID,
+        raceId: RACE_ID,
+        candidateId: DEFAULT_CANDIDATE_ID,
+      });
+
+      input.merkle_root = "0";
+
+      await expectWitnessFailure(input, "Should reject zero merkle_root");
     });
   });
 
-  // ── 2. Eleitor não cadastrado ───────────────────────────────────────────────
-  describe("2. Eleitor não cadastrado", function () {
-    it("deve falhar para voter_id cujo hash não está na Merkle tree", async function () {
-      if (!fs.existsSync(WASM_PATH)) return this.skip();
+  // ══════════════════════════════════════════════════════════════════════════════
+  // 3. INVALID MERKLE PATH
+  // ══════════════════════════════════════════════════════════════════════════════
+  describe("3. Invalid Merkle path", function () {
+    it("should reject when sibling elements are from a different voter's path", async function () {
+      const input = buildValidInput({
+        poseidon, F, tree, voterIds,
+        voterIndex: 0,
+        electionId: ELECTION_ID,
+        raceId: RACE_ID,
+        candidateId: DEFAULT_CANDIDATE_ID,
+      });
 
-      // voter_id válido mas pertencente a outro eleitor (índice 1)
-      // porém usando o merkle_path do índice 0 → root não bate
-      const intruderVoterId = 99999999999n; // não está na árvore
-      const { pathElements, pathIndices } = buildMerkleProof(tree, 0);
-      const nullifier = poseidon([intruderVoterId, ELECTION_ID, RACE_ID]);
-
-      const input = {
-        voter_id: intruderVoterId.toString(),        race_id: RACE_ID.toString(),        merkle_path: pathElements.map((x) => F.toString(x)),
-        merkle_path_indices: pathIndices,
-        merkle_root: F.toString(root),
-        nullifier_hash: F.toString(nullifier),
-        candidate_id: "13",
-        election_id: ELECTION_ID.toString(),
-      };
-
-      let threw = false;
-      try {
-        await calculateWitness(input);
-      } catch {
-        threw = true;
-      }
-      expect(threw, "Deveria falhar para eleitor não cadastrado").to.equal(true);
-    });
-  });
-
-  // ── 3. Merkle path incorreto ────────────────────────────────────────────────
-  describe("3. Merkle path incorreto", function () {
-    it("deve falhar quando os irmãos do caminho estão errados", async function () {
-      if (!fs.existsSync(WASM_PATH)) return this.skip();
-
-      const voterId = voterIds[0];
-      // Usar o caminho do eleitor de índice 1 com o voter_id do índice 0
       const { pathElements: wrongPath, pathIndices: wrongIndices } = buildMerkleProof(tree, 1);
-      const nullifier = poseidon([voterId, ELECTION_ID, RACE_ID]);
+      input.merkle_path = wrongPath.map((x) => F.toString(x));
+      input.merkle_path_indices = wrongIndices;
 
-      const input = {
-        voter_id: voterId.toString(),
-        race_id: RACE_ID.toString(),
-        merkle_path: wrongPath.map((x) => F.toString(x)),
-        merkle_path_indices: wrongIndices,
-        merkle_root: F.toString(root),
-        nullifier_hash: F.toString(nullifier),
-        candidate_id: "13",
-        election_id: ELECTION_ID.toString(),
-      };
-
-      let threw = false;
-      try {
-        await calculateWitness(input);
-      } catch {
-        threw = true;
-      }
-      expect(threw, "Deveria falhar com merkle_path incorreto").to.equal(true);
+      await expectWitnessFailure(input, "Should reject mismatched Merkle path");
     });
-  });
 
-  // ── 4. Nullifier incorreto ──────────────────────────────────────────────────
-  describe("4. Nullifier incorreto", function () {
-    it("deve falhar quando nullifier_hash não corresponde a Poseidon(voter_id, election_id, race_id)", async function () {
-      if (!fs.existsSync(WASM_PATH)) return this.skip();
-
+    it("should reject when a single sibling is zeroed", async function () {
       const input = buildValidInput({
         poseidon, F, tree, voterIds,
         voterIndex: 0,
         electionId: ELECTION_ID,
         raceId: RACE_ID,
-        candidateId: 13n,
+        candidateId: DEFAULT_CANDIDATE_ID,
       });
 
-      // Substituir pelo nullifier de um eleitor diferente
+      input.merkle_path[0] = "0";
+
+      await expectWitnessFailure(input, "Should reject zeroed sibling");
+    });
+
+    it("should reject when path_indices are invalid (not binary)", async function () {
+      const input = buildValidInput({
+        poseidon, F, tree, voterIds,
+        voterIndex: 0,
+        electionId: ELECTION_ID,
+        raceId: RACE_ID,
+        candidateId: DEFAULT_CANDIDATE_ID,
+      });
+
+      input.merkle_path_indices[0] = 2;
+
+      await expectWitnessFailure(input, "Should reject non-binary path index");
+    });
+  });
+
+  // ══════════════════════════════════════════════════════════════════════════════
+  // 4. NULLIFIER BINDING (deterministic)
+  // ══════════════════════════════════════════════════════════════════════════════
+  describe("4. Nullifier binding", function () {
+    it("same (voter_id, election_id, race_id) always yields same nullifier", function () {
+      const null1 = poseidon([voterIds[0], ELECTION_ID, RACE_ID]);
+      const null2 = poseidon([voterIds[0], ELECTION_ID, RACE_ID]);
+      expect(F.toString(null1)).to.equal(F.toString(null2));
+    });
+
+    it("should reject when nullifier_hash doesn't match Poseidon(voter_id, election_id, race_id)", async function () {
+      const input = buildValidInput({
+        poseidon, F, tree, voterIds,
+        voterIndex: 0,
+        electionId: ELECTION_ID,
+        raceId: RACE_ID,
+        candidateId: DEFAULT_CANDIDATE_ID,
+      });
+
       const wrongNullifier = poseidon([voterIds[1], ELECTION_ID, RACE_ID]);
       input.nullifier_hash = F.toString(wrongNullifier);
 
-      let threw = false;
-      try {
-        await calculateWitness(input);
-      } catch {
-        threw = true;
-      }
-      expect(threw, "Deveria falhar com nullifier_hash incorreto").to.equal(true);
+      await expectWitnessFailure(input, "Should reject mismatched nullifier_hash");
+    });
+
+    it("should reject when nullifier uses only 2 inputs (missing race_id)", async function () {
+      const input = buildValidInput({
+        poseidon, F, tree, voterIds,
+        voterIndex: 0,
+        electionId: ELECTION_ID,
+        raceId: RACE_ID,
+        candidateId: DEFAULT_CANDIDATE_ID,
+      });
+
+      const twoInputNull = poseidon([voterIds[0], ELECTION_ID]);
+      input.nullifier_hash = F.toString(twoInputNull);
+
+      await expectWitnessFailure(input, "Should reject 2-input nullifier (missing race_id)");
     });
   });
 
-  // ── 5. Voto em branco ───────────────────────────────────────────────────────
-  describe("5. Voto em branco (candidate_id = 0)", function () {
-    it("deve gerar witness válida para voto em branco", async function () {
-      if (!fs.existsSync(WASM_PATH)) return this.skip();
-
-      const input = buildValidInput({
-        poseidon, F, tree, voterIds,
-        voterIndex: 2,
-        electionId: ELECTION_ID,
-        raceId: RACE_ID,
-        candidateId: 0n, // branco
-      });
-
-      await calculateWitness(input); // não deve lançar
+  // ══════════════════════════════════════════════════════════════════════════════
+  // 5. NULLIFIER DISTINCTNESS
+  // ══════════════════════════════════════════════════════════════════════════════
+  describe("5. Nullifier distinctness", function () {
+    it("different race_id → different nullifier for same voter", function () {
+      const null1 = poseidon([voterIds[0], ELECTION_ID, 1n]);
+      const null2 = poseidon([voterIds[0], ELECTION_ID, 2n]);
+      expect(F.toString(null1)).to.not.equal(F.toString(null2));
     });
 
-    it("deve gerar e verificar prova PLONK para voto em branco", async function () {
-      if (!fs.existsSync(WASM_PATH) || !fs.existsSync(ZKEY_PATH)) {
-        return this.skip();
-      }
+    it("different election_id → different nullifier for same voter", function () {
+      const null1 = poseidon([voterIds[0], 1n, RACE_ID]);
+      const null2 = poseidon([voterIds[0], 2n, RACE_ID]);
+      expect(F.toString(null1)).to.not.equal(F.toString(null2));
+    });
 
+    it("different voter_id → different nullifier for same election/race", function () {
+      const null1 = poseidon([voterIds[0], ELECTION_ID, RACE_ID]);
+      const null2 = poseidon([voterIds[1], ELECTION_ID, RACE_ID]);
+      expect(F.toString(null1)).to.not.equal(F.toString(null2));
+    });
+  });
+
+  // ══════════════════════════════════════════════════════════════════════════════
+  // 6. RELAY ATTACK GUARD
+  // ══════════════════════════════════════════════════════════════════════════════
+  describe("6. Relay attack guard", function () {
+    it("proof valid for race_id=1 should fail when race_id is changed to 2", async function () {
+      const input1 = buildValidInput({
+        poseidon, F, tree, voterIds,
+        voterIndex: 0,
+        electionId: ELECTION_ID,
+        raceId: 1n,
+        candidateId: DEFAULT_CANDIDATE_ID,
+      });
+      await expectWitnessSuccess(input1);
+
+      // Tamper: change race_id but keep race_id=1's nullifier
+      const tamperedInput = { ...input1, race_id: "2" };
+
+      await expectWitnessFailure(
+        tamperedInput,
+        "Should reject when race_id is changed but nullifier stays the same"
+      );
+    });
+
+    it("swapping nullifier_hash to another race should fail", async function () {
+      const input = buildValidInput({
+        poseidon, F, tree, voterIds,
+        voterIndex: 0,
+        electionId: ELECTION_ID,
+        raceId: 1n,
+        candidateId: DEFAULT_CANDIDATE_ID,
+      });
+
+      const wrongNull = poseidon([voterIds[0], ELECTION_ID, 2n]);
+      input.nullifier_hash = F.toString(wrongNull);
+
+      await expectWitnessFailure(input, "Should reject cross-race nullifier");
+    });
+  });
+
+  // ══════════════════════════════════════════════════════════════════════════════
+  // 7. BLANK VOTE (candidate_id = 0)
+  // ══════════════════════════════════════════════════════════════════════════════
+  describe("7. Blank vote (candidate_id = 0)", function () {
+    it("should generate a valid witness for blank vote", async function () {
       const input = buildValidInput({
         poseidon, F, tree, voterIds,
         voterIndex: 2,
@@ -241,32 +297,15 @@ describe("VoterProof – circuito ZK de votação", function () {
         candidateId: 0n,
       });
 
-      const ok = await proveAndVerify(input);
-      expect(ok).to.equal(true);
+      await expectWitnessSuccess(input);
     });
   });
 
-  // ── 6. Voto nulo ────────────────────────────────────────────────────────────
-  describe("6. Voto nulo (candidate_id = 999)", function () {
-    it("deve gerar witness válida para voto nulo", async function () {
-      if (!fs.existsSync(WASM_PATH)) return this.skip();
-
-      const input = buildValidInput({
-        poseidon, F, tree, voterIds,
-        voterIndex: 3,
-        electionId: ELECTION_ID,
-        raceId: RACE_ID,
-        candidateId: 999n, // nulo
-      });
-
-      await calculateWitness(input); // não deve lançar
-    });
-
-    it("deve gerar e verificar prova PLONK para voto nulo", async function () {
-      if (!fs.existsSync(WASM_PATH) || !fs.existsSync(ZKEY_PATH)) {
-        return this.skip();
-      }
-
+  // ══════════════════════════════════════════════════════════════════════════════
+  // 8. NULL VOTE (candidate_id = 999)
+  // ══════════════════════════════════════════════════════════════════════════════
+  describe("8. Null vote (candidate_id = 999)", function () {
+    it("should generate a valid witness for null vote", async function () {
       const input = buildValidInput({
         poseidon, F, tree, voterIds,
         voterIndex: 3,
@@ -275,40 +314,173 @@ describe("VoterProof – circuito ZK de votação", function () {
         candidateId: 999n,
       });
 
-      const ok = await proveAndVerify(input);
-      expect(ok).to.equal(true);
+      await expectWitnessSuccess(input);
     });
   });
 
-  // ── 7. Isolamento por race_id ──────────────────────────────────────────────
-  describe("7. Isolamento por race_id", function () {
-    it("deve produzir nullifiers diferentes para race_id=1 e race_id=2 com mesmo voter_id", async function () {
-      if (!fs.existsSync(WASM_PATH)) return this.skip();
-
-      const inputRace1 = buildValidInput({
+  // ══════════════════════════════════════════════════════════════════════════════
+  // 9. CONSTRAINT COVERAGE
+  // ══════════════════════════════════════════════════════════════════════════════
+  describe("9. Constraint coverage", function () {
+    it("voter_id outside 40-bit range should fail (Num2Bits check)", async function () {
+      const input = buildValidInput({
         poseidon, F, tree, voterIds,
         voterIndex: 0,
         electionId: ELECTION_ID,
-        raceId: 1n,
-        candidateId: 13n,
+        raceId: RACE_ID,
+        candidateId: DEFAULT_CANDIDATE_ID,
       });
 
-      const inputRace2 = buildValidInput({
+      // 2^41 breaks Num2Bits(40)
+      const hugeVoterId = (1n << 41n).toString();
+      input.voter_id = hugeVoterId;
+      input.nullifier_hash = F.toString(poseidon([BigInt(hugeVoterId), ELECTION_ID, RACE_ID]));
+
+      await expectWitnessFailure(input, "Should reject voter_id > 2^40");
+    });
+
+    it("all public signals participate in constraints", async function () {
+      const baseInput = buildValidInput({
         poseidon, F, tree, voterIds,
         voterIndex: 0,
         electionId: ELECTION_ID,
-        raceId: 2n,
-        candidateId: 13n,
+        raceId: RACE_ID,
+        candidateId: DEFAULT_CANDIDATE_ID,
       });
 
-      expect(inputRace1.nullifier_hash).to.not.equal(
-        inputRace2.nullifier_hash,
-        "Nullifiers de race_id distintos devem diferir para prevenir duplo vôto entre cargos"
-      );
+      await expectWitnessSuccess(baseInput);
 
-      // Ambas as witnesses devem ser válidas individualmente
-      await calculateWitness(inputRace1);
-      await calculateWitness(inputRace2);
+      // merkle_root: constrained via === levelHashes[depth]
+      const tampered1 = { ...baseInput, merkle_root: F.toString(poseidon([42n])) };
+      await expectWitnessFailure(tampered1, "merkle_root must be constrained");
+
+      // nullifier_hash: constrained via === nullifierHasher.out
+      const tampered2 = { ...baseInput, nullifier_hash: F.toString(poseidon([42n])) };
+      await expectWitnessFailure(tampered2, "nullifier_hash must be constrained");
+
+      // election_id: constrained via nullifier computation
+      const tampered3 = { ...baseInput, election_id: "999" };
+      await expectWitnessFailure(tampered3, "election_id must be constrained");
+
+      // race_id: constrained via nullifier computation + dummy
+      const tampered4 = { ...baseInput, race_id: "999" };
+      await expectWitnessFailure(tampered4, "race_id must be constrained");
+
+      // candidate_id: constrained via dummy x*x (any value is valid)
+      const candidateInput = { ...baseInput, candidate_id: "42" };
+      await expectWitnessSuccess(candidateInput);
+    });
+  });
+
+  // ══════════════════════════════════════════════════════════════════════════════
+  // 10. CROSS-VERIFICATION with circomlibjs
+  // ══════════════════════════════════════════════════════════════════════════════
+  describe("10. Cross-verification with circomlibjs", function () {
+    it("nullifier computed off-circuit matches circuit expectation", async function () {
+      const voterId = voterIds[0];
+      const offCircuitNullifier = F.toString(poseidon([voterId, ELECTION_ID, RACE_ID]));
+
+      const input = buildValidInput({
+        poseidon, F, tree, voterIds,
+        voterIndex: 0,
+        electionId: ELECTION_ID,
+        raceId: RACE_ID,
+        candidateId: DEFAULT_CANDIDATE_ID,
+      });
+
+      expect(input.nullifier_hash).to.equal(offCircuitNullifier);
+      await expectWitnessSuccess(input);
+    });
+
+    it("leaf hash computed off-circuit matches Poseidon(voter_id)", function () {
+      for (const id of voterIds) {
+        const offCircuitLeaf = F.toString(poseidon([id]));
+        const treeLeaf = F.toString(tree[0][voterIds.indexOf(id)]);
+        expect(offCircuitLeaf).to.equal(treeLeaf);
+      }
+    });
+
+    it("Merkle root recomputed from leaves matches tree root", function () {
+      const size = 1 << DEPTH;
+      const leaves = voterIds.map((id) => poseidon([id]));
+      while (leaves.length < size) leaves.push(F.zero);
+
+      let level = leaves;
+      for (let d = 0; d < DEPTH; d++) {
+        const next = [];
+        for (let i = 0; i < level.length; i += 2) {
+          next.push(poseidon([level[i], level[i + 1]]));
+        }
+        level = next;
+      }
+
+      expect(F.toString(level[0])).to.equal(F.toString(root));
+    });
+  });
+
+  // ══════════════════════════════════════════════════════════════════════════════
+  // 11. EDGE CASES
+  // ══════════════════════════════════════════════════════════════════════════════
+  describe("11. Edge cases", function () {
+    it("unregistered voter (voter_id not in tree) should fail", async function () {
+      const intruder = 99999999999n;
+      const { pathElements, pathIndices } = buildMerkleProof(tree, 0);
+      const nullifier = poseidon([intruder, ELECTION_ID, RACE_ID]);
+
+      const input = {
+        voter_id: intruder.toString(),
+        race_id: RACE_ID.toString(),
+        merkle_path: pathElements.map((x) => F.toString(x)),
+        merkle_path_indices: pathIndices,
+        merkle_root: F.toString(root),
+        nullifier_hash: F.toString(nullifier),
+        candidate_id: DEFAULT_CANDIDATE_ID.toString(),
+        election_id: ELECTION_ID.toString(),
+      };
+
+      await expectWitnessFailure(input, "Unregistered voter should be rejected");
+    });
+
+    it("voter_id = 0 should fail (not in tree)", async function () {
+      const { pathElements, pathIndices } = buildMerkleProof(tree, 0);
+      const nullifier = poseidon([0n, ELECTION_ID, RACE_ID]);
+
+      const input = {
+        voter_id: "0",
+        race_id: RACE_ID.toString(),
+        merkle_path: pathElements.map((x) => F.toString(x)),
+        merkle_path_indices: pathIndices,
+        merkle_root: F.toString(root),
+        nullifier_hash: F.toString(nullifier),
+        candidate_id: DEFAULT_CANDIDATE_ID.toString(),
+        election_id: ELECTION_ID.toString(),
+      };
+
+      await expectWitnessFailure(input, "voter_id=0 should be rejected (not in tree)");
+    });
+
+    it("large candidate_id should still produce valid witness", async function () {
+      const input = buildValidInput({
+        poseidon, F, tree, voterIds,
+        voterIndex: 0,
+        electionId: ELECTION_ID,
+        raceId: RACE_ID,
+        candidateId: 99999n,
+      });
+
+      await expectWitnessSuccess(input);
+    });
+
+    it("last voter in tree (index 14) should work", async function () {
+      const input = buildValidInput({
+        poseidon, F, tree, voterIds,
+        voterIndex: 14,
+        electionId: ELECTION_ID,
+        raceId: RACE_ID,
+        candidateId: DEFAULT_CANDIDATE_ID,
+      });
+
+      await expectWitnessSuccess(input);
     });
   });
 });

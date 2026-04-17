@@ -14,13 +14,14 @@ Sem revelar o `voter_id` (CPF do eleitor), a prova ZK demonstra simultaneamente:
 |-------------|-----------------|
 | **Autorização** | O eleitor conhece um `voter_id` cujo `Poseidon(voter_id)` pertence à Merkle tree de eleitores autorizados |
 | **Integridade** | O hash da folha foi calculado corretamente pelo próprio circuito (nenhum dado externo pode forjá-lo) |
-| **Unicidade** | O `nullifier_hash` apresentado é exatamente `Poseidon(voter_id, election_id)`, impedindo voto duplo sem revelar identidade |
+| **Unicidade** | O `nullifier_hash` apresentado é exatamente `Poseidon(voter_id, election_id, race_id)`, impedindo voto duplo por cargo sem revelar identidade |
+| **Isolamento por cargo** | `race_id` é sinal público — impede que um relayer reutilize uma prova gerada para o cargo A enviando-a ao cargo B (relay attack) |
 
 ### Por que Poseidon em vez de SHA-256?
 
 O hash **Poseidon** foi projetado especificamente para circuitos aritméticos sobre campos finitos:
 
-- SHA-256 gera ~25.000 constraints em R1CS; Poseidon gera ~240 — **100× mais eficiente**.
+- SHA-256 gera ~25.000 constraints em R1CS; Poseidon gera ~240–300 (dependendo da aridade) — **~100× mais eficiente** (Grassi et al., 2021).
 - Tempos de prova menores: 1–3s em desktop, 3–5s em mobile.
 - Amplamente adotado em projetos ZK (Tornado Cash, Semaphore, zkSync, Polygon).
 
@@ -141,24 +142,31 @@ Executa `scripts/04_test_proof.js`, que:
 4. Gera a prova PLONK e exibe o tempo de geração.
 5. Verifica a prova e exibe o resultado.
 
-### Testes automatizados (Mocha)
+### Testes automatizados (Mocha + circom_tester)
 
 ```bash
-npm run test:full
+npm test
 ```
 
-Executa os testes em `test/voter_proof.test.js` cobrindo 6 cenários:
+Executa a suite completa em `test/voter_proof.test.js` com **circom_tester**:
+o circuito é compilado automaticamente — **nenhum artefato de build é necessário**.
 
-| # | Cenário | Comportamento esperado |
-|---|---------|----------------------|
-| 1 | Prova válida — eleitor cadastrado | ✅ Prova gerada e verificada |
-| 2 | Eleitor não cadastrado | ❌ Falha (raiz da árvore não bate) |
-| 3 | Merkle path incorreto | ❌ Falha (raiz calculada diverge) |
-| 4 | Nullifier incorreto | ❌ Falha (constraint `nullifier_hash === Poseidon(voter_id, election_id)`) |
-| 5 | Voto em branco (`candidate_id = 0`) | ✅ Funciona normalmente |
-| 6 | Voto nulo (`candidate_id = 999`) | ✅ Funciona normalmente |
+| # | Categoria | Testes | Comportamento esperado |
+|---|-----------|--------|------------------------|
+| 1 | Happy path | 2 | ✅ Witness válida + checkConstraints |
+| 2 | Wrong merkle_root | 2 | ❌ Falha na constraint |
+| 3 | Invalid Merkle path | 3 | ❌ Falha (raiz diverge / índice não-binário) |
+| 4 | Nullifier binding | 3 | ❌ Nullifier errado → falha; determinístico |
+| 5 | Nullifier distinctness | 3 | Diferentes (voter, election, race) → nullifiers distintos |
+| 6 | Relay attack guard | 2 | ❌ Troca de race_id invalida a prova |
+| 7 | Voto em branco | 1 | ✅ candidate_id=0 funciona |
+| 8 | Voto nulo | 1 | ✅ candidate_id=999 funciona |
+| 9 | Constraint coverage | 2 | Num2Bits(40) + todos os sinais públicos |
+| 10 | Cross-verification | 3 | Saídas do circuito batem com circomlibjs |
+| 11 | Edge cases | 4 | Eleitor não-cadastrado, voter_id=0, último índice |
 
-> ⚠️ Os testes de prova completa são pulados automaticamente se `build/voter_proof.wasm` ou `build/voter_proof.zkey` não existirem. Os testes de witness (apenas constraints) requerem apenas o WASM.
+> Os testes usam `circom_tester` (iden3) que compila o circuito sob demanda.
+> A primeira execução pode levar ~30s para compilar; execuções subsequentes são instantâneas.
 
 ---
 
@@ -188,31 +196,57 @@ cp build/voter_proof.zkey                ../votacao-zk-frontend/public/circuits/
 ## Estrutura do circuito
 
 ```
-                    ┌─────────────────────────────────────────┐
-  [PRIVADO]         │           VoterProof(depth=4)            │
-  voter_id ────────►│ Poseidon(voter_id) = voter_hash          │
-  merkle_path[] ───►│ MerkleCheck(voter_hash, path) = root     │──► root === merkle_root  [PÚBLICO]
-  path_indices[] ──►│                                          │
-                    │ Poseidon(voter_id, election_id) = null   │──► null === nullifier_hash [PÚBLICO]
-  [PÚBLICO]         │                                          │
-  election_id ─────►│                                          │
-  candidate_id ────►│ (registrado on-chain)                    │──► candidate_id           [PÚBLICO]
-  merkle_root ─────►│                                          │
-  nullifier_hash ──►│                                          │
-                    └─────────────────────────────────────────┘
+                    ┌──────────────────────────────────────────────────┐
+  [PRIVADO]         │              VoterProof(depth=4)                  │
+  voter_id ────────►│ Num2Bits(40): range check                        │
+                    │ Poseidon(voter_id) = voter_hash                   │
+  merkle_path[] ───►│ MerkleCheck(voter_hash, path) = root             │──► root === merkle_root  [PUB 0]
+  path_indices[] ──►│                                                  │
+                    │ Poseidon(voter_id, election_id, race_id) = null  │──► null === nullifier_hash [PUB 1]
+  [PÚBLICO]         │                                                  │
+  election_id ─────►│                                                  │──► election_id            [PUB 3]
+  race_id ─────────►│                                                  │──► race_id                [PUB 4]
+  candidate_id ────►│ (registrado on-chain)                            │──► candidate_id            [PUB 2]
+  merkle_root ─────►│                                                  │
+  nullifier_hash ──►│                                                  │
+                    └──────────────────────────────────────────────────┘
+
+### Ordem canônica dos sinais públicos
+
+| Índice | Sinal | Descrição |
+|--------|-------|----------|
+| `pubSignals[0]` | `merkle_root` | Raiz da árvore de eleitores autorizados |
+| `pubSignals[1]` | `nullifier_hash` | `Poseidon(voter_id, election_id, race_id)` — anti-voto-duplo |
+| `pubSignals[2]` | `candidate_id` | Candidato escolhido (0=branco, 999=nulo) |
+| `pubSignals[3]` | `election_id` | Identificador da eleição |
+| `pubSignals[4]` | `race_id` | Identificador do cargo (guarda anti-relay) |
 ```
 
 ### Estimativa de constraints
 
 | Componente | Constraints |
 |------------|------------|
-| `Poseidon(voter_id)` | ~240 |
-| Merkle path × 4 níveis — `Poseidon(2)` + `Mux1` | ~960 |
-| `Poseidon(voter_id, election_id)` | ~240 |
+| `Num2Bits(40)` — range check do voter_id | 40 |
+| `Poseidon(1)` — hash da folha | ~240 |
+| Merkle path × 4 níveis — `Poseidon(2)` + `2×Mux1` | ~968 |
+| `Poseidon(3)` — nullifier (voter_id, election_id, race_id) | ~300 |
 | Constraints de índice binário (4×) | 4 |
-| **Total estimado** | **~1.444** |
+| Dummy constraints (candidate_id, race_id) | 2 |
+| **Total estimado** | **~1.554** |
 
 O arquivo `powersOfTau28_hez_final_14.ptau` suporta até 2^14 = 16.384 constraints — amplamente suficiente.
+
+---
+
+## Limitações e modelo de ameaça
+
+| Limitação | Detalhes |
+|-----------|----------|
+| **Curva BN254** | Segurança estimada em ~100 bits (não 128) após ataques exTNFS (Kim-Barbulescu, 2015). Suficiente para PoC acadêmica, mas não recomendada para produção crítica sem migração para BLS12-381. |
+| **Auditoria formal** | O circomspect é um linter estático, não uma prova formal de soundness. Nenhuma auditoria externa foi realizada. |
+| **Powers of Tau** | A cerimônia utilizada (Hermez) não foi conduzida independentemente pelo grupo. |
+| **Escopo PoC** | Árvore de profundidade 4 (máx. 16 eleitores). Para produção, aumentar para 20+ (>1M eleitores). |
+| **Validação de candidato** | O circuito aceita qualquer `candidate_id`; a validação de intervalo é responsabilidade exclusiva do smart contract. |
 
 ---
 

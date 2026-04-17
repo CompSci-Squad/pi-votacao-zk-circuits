@@ -1,0 +1,327 @@
+# =============================================================================
+# CI Pipeline — pi-votacao-zk-circuits
+#
+# Tiered pipeline:
+#   T0 (fast)  : lint + circomspect static analysis (~2min)
+#   T1 (medium): compile circuit + witness-only tests (~5min)
+#   T2 (full)  : PLONK setup + full proof gen/verify + export artifacts (~8min)
+#
+# Caching strategy:
+#   - Rust toolchain + cargo binaries (circom, circomspect) via Swatinem/rust-cache
+#   - Powers of Tau file (120MB) via actions/cache with hash-based key
+#   - Node modules via actions/cache matching package-lock.json
+#   - Build artifacts passed between jobs via actions/upload/download-artifact
+# =============================================================================
+
+name: ZK Circuit CI
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'circuits/**'
+      - 'test/**'
+      - 'scripts/**'
+      - 'package.json'
+      - '.github/workflows/ci.yml'
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - 'circuits/**'
+      - 'test/**'
+      - 'scripts/**'
+      - 'package.json'
+      - '.github/workflows/ci.yml'
+  workflow_dispatch:
+
+# Cancel in-progress runs for the same branch/PR
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '20'
+  CIRCOM_VERSION: 'v2.1.9'
+  PTAU_FILE: 'powersOfTau28_hez_final_14.ptau'
+  PTAU_URL: 'https://hermez.s3-eu-west-1.amazonaws.com/powersOfTau28_hez_final_14.ptau'
+
+# =============================================================================
+# T0 — Static Analysis (fast, no build artifacts needed)
+# =============================================================================
+jobs:
+  lint:
+    name: 'T0: Static Analysis'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # -- Rust toolchain (for circom + circomspect) --
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust/Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          # Cache circom and circomspect binaries
+          cache-all-crates: true
+
+      - name: Install circom
+        run: |
+          if ! command -v circom &> /dev/null; then
+            cargo install --git https://github.com/iden3/circom.git --tag ${{ env.CIRCOM_VERSION }}
+          fi
+          circom --version
+
+      - name: Install circomspect
+        run: |
+          if ! command -v circomspect &> /dev/null; then
+            cargo install circomspect
+          fi
+          circomspect --version
+
+      # -- Node dependencies (needed for circomlib includes) --
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      # -- Circomspect static analysis --
+      - name: Run circomspect
+        run: |
+          echo "=== Running circomspect static analysis ==="
+          circomspect circuits/voter_proof.circom \
+            --level warning \
+            --sarif-file circomspect.sarif \
+            || true
+          # Display human-readable output
+          circomspect circuits/voter_proof.circom --level warning 2>&1 | tee circomspect-output.txt
+          # Fail on unconstrained signal warnings
+          if grep -q "signal may be unconstrained" circomspect-output.txt; then
+            echo "::error::Unconstrained signal detected — this is a security vulnerability"
+            exit 1
+          fi
+
+      - name: Upload SARIF report
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: circomspect.sarif
+        continue-on-error: true
+
+      # -- Basic circuit syntax check (fast compile, no output) --
+      - name: Syntax check (circom parse)
+        run: |
+          circom circuits/voter_proof.circom \
+            --r1cs \
+            --output /tmp/syntax-check \
+            -l node_modules
+          echo "✅ Circuit syntax valid"
+          npx snarkjs r1cs info /tmp/syntax-check/voter_proof.r1cs
+
+  # =============================================================================
+  # T1 — Compile + Witness Tests (medium, no zkey needed)
+  # =============================================================================
+  witness-tests:
+    name: 'T1: Compile + Witness Tests'
+    runs-on: ubuntu-latest
+    needs: lint
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust/Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          cache-all-crates: true
+
+      - name: Install circom
+        run: |
+          if ! command -v circom &> /dev/null; then
+            cargo install --git https://github.com/iden3/circom.git --tag ${{ env.CIRCOM_VERSION }}
+          fi
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      # -- Compile circuit --
+      - name: Compile circuit
+        run: |
+          chmod +x scripts/01_compile.sh
+          npm run compile
+
+      - name: Inspect R1CS
+        run: |
+          npx snarkjs r1cs info build/voter_proof.r1cs
+          CONSTRAINTS=$(npx snarkjs r1cs info build/voter_proof.r1cs 2>&1 | grep -oP 'Constraints: \K\d+')
+          echo "constraint_count=$CONSTRAINTS" >> "$GITHUB_ENV"
+          echo "### Circuit Stats" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Constraints:** $CONSTRAINTS" >> "$GITHUB_STEP_SUMMARY"
+          # Sanity check: should be < 2^14 = 16384 for our ptau
+          if [ "$CONSTRAINTS" -gt 16384 ]; then
+            echo "::error::Constraint count ($CONSTRAINTS) exceeds ptau capacity (16384)"
+            exit 1
+          fi
+
+      # -- Run witness-only tests (no zkey needed) --
+      - name: Run witness tests
+        run: |
+          npx mocha test/*.test.js --timeout 60000 --grep "witness" --reporter spec || \
+          npx mocha test/*.test.js --timeout 60000 --reporter spec
+
+      # -- Upload build artifacts for T2 --
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: circuit-build
+          path: |
+            build/voter_proof.r1cs
+            build/voter_proof.sym
+            build/voter_proof_js/
+          retention-days: 1
+
+  # =============================================================================
+  # T2 — Full Proof Tests + Artifact Export (slow, full pipeline)
+  # =============================================================================
+  full-proof-tests:
+    name: 'T2: Full Proof + Artifacts'
+    runs-on: ubuntu-latest
+    needs: witness-tests
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      # -- Download compiled circuit from T1 --
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: circuit-build
+          path: build/
+
+      # -- Cache Powers of Tau (120MB, rarely changes) --
+      - name: Cache Powers of Tau
+        id: ptau-cache
+        uses: actions/cache@v4
+        with:
+          path: ptau/${{ env.PTAU_FILE }}
+          key: ptau-hermez-final-14-v1
+
+      - name: Download Powers of Tau
+        if: steps.ptau-cache.outputs.cache-hit != 'true'
+        run: |
+          chmod +x scripts/download_ptau.sh
+          ./scripts/download_ptau.sh
+
+      # -- PLONK setup --
+      - name: PLONK setup (generate zkey)
+        run: |
+          echo "=== PLONK Setup ==="
+          npx snarkjs plonk setup \
+            build/voter_proof.r1cs \
+            ptau/${{ env.PTAU_FILE }} \
+            build/voter_proof.zkey
+          npx snarkjs zkey export verificationkey \
+            build/voter_proof.zkey \
+            build/verification_key.json
+          echo "✅ Setup complete"
+
+      # -- Run full test suite with PLONK proofs --
+      - name: Run full test suite
+        run: npx mocha test/*.test.js --timeout 120000 --reporter spec
+
+      # -- Demo proof generation --
+      - name: Generate demo proof
+        run: node scripts/04_test_proof.js
+
+      # -- Export Verifier.sol --
+      - name: Export Verifier.sol
+        run: |
+          npx snarkjs zkey export solidityverifier \
+            build/voter_proof.zkey \
+            build/Verifier.sol
+          echo "✅ Verifier.sol exported"
+
+      # -- Upload final artifacts --
+      - name: Upload proof artifacts
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
+        uses: actions/upload-artifact@v4
+        with:
+          name: zk-artifacts-${{ github.sha }}
+          path: |
+            build/voter_proof_js/voter_proof.wasm
+            build/voter_proof.zkey
+            build/verification_key.json
+            build/Verifier.sol
+          retention-days: 30
+
+      # -- Summary --
+      - name: Pipeline summary
+        run: |
+          echo "### ZK Artifacts" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **voter_proof.wasm:** $(du -h build/voter_proof_js/voter_proof.wasm | cut -f1)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **voter_proof.zkey:** $(du -h build/voter_proof.zkey | cut -f1)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Verifier.sol:** $(wc -l < build/Verifier.sol) lines" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Commit:** \`${{ github.sha }}\`" >> "$GITHUB_STEP_SUMMARY"
+
+  # =============================================================================
+  # Cross-repo artifact dispatch (only on main branch push)
+  # =============================================================================
+  dispatch-artifacts:
+    name: 'Dispatch artifacts to downstream repos'
+    runs-on: ubuntu-latest
+    needs: full-proof-tests
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    steps:
+      - name: Trigger blockchain repo
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.CROSS_REPO_PAT }}
+          repository: compsci-squad/pi-votacao-zk-blockchain
+          event-type: zk-artifacts-updated
+          client-payload: '{"sha": "${{ github.sha }}", "run_id": "${{ github.run_id }}"}'
+        continue-on-error: true
+
+      - name: Trigger frontend repo
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.CROSS_REPO_PAT }}
+          repository: compsci-squad/pi-votacao-zk-frontend
+          event-type: zk-artifacts-updated
+          client-payload: '{"sha": "${{ github.sha }}", "run_id": "${{ github.run_id }}"}'
+        continue-on-error: true
+
+      - name: Trigger backend repo
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.CROSS_REPO_PAT }}
+          repository: compsci-squad/pi-votacao-zk-backend
+          event-type: zk-artifacts-updated
+          client-payload: '{"sha": "${{ github.sha }}", "run_id": "${{ github.run_id }}"}'
+        continue-on-error: true

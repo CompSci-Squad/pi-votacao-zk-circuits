@@ -1,7 +1,8 @@
-pragma circom 2.0.0;
+pragma circom 2.1.6;
 
 include "circomlib/circuits/poseidon.circom";
 include "circomlib/circuits/mux1.circom";
+include "circomlib/circuits/bitify.circom";
 
 /*
  * VoterProof
@@ -40,10 +41,26 @@ template VoterProof(depth) {
     signal input race_id;         // Identificador do cargo (ex.: 1=Presidente) — PÚBLICO
 
     // ── 1. Calcular voter_hash = Poseidon(voter_id) ──────────────────────────
+    //
+    // Restrição de intervalo: voter_id deve caber em 40 bits (suficiente para
+    // CPFs de 11 dígitos, máximo ~1,1 trilhão). Impede que um provador
+    // malicioso insira elementos arbitrários do campo BN128 (~2^254).
+    // Referência: vulnerabilidade Dark Forest (Daira Hopwood) — campos
+    // sem restrição de intervalo permitiram entradas fora do domínio.
+    component voterBits = Num2Bits(40);
+    voterBits.in <== voter_id;
+
     component leafHasher = Poseidon(1);
     leafHasher.inputs[0] <== voter_id;
 
     // ── 2. Verificar pertencimento à Merkle tree (profundidade = depth) ──────
+    //
+    // DECISÃO ARQUITETURAL: implementação manual com Mux1 + Poseidon(2).
+    // circomlib (npm circomlib@2.0.5) NÃO fornece um template de prova de
+    // Merkle binária — apenas SMTVerifier (Sparse Merkle Tree), que tem
+    // interface e semântica diferentes. A implementação manual abaixo segue
+    // o padrão de Tornado Cash e Semaphore v2, usando Mux1 e Poseidon da
+    // própria circomlib auditada.
     component hashers[depth];
     component leftMux[depth];
     component rightMux[depth];
@@ -97,10 +114,11 @@ template VoterProof(depth) {
     signal candidate_id_squared;
     candidate_id_squared <== candidate_id * candidate_id;
 
-    // race_id: vincula esta prova a um cargo específico. Sendo sinal público,
-    // o contrato pode verificar que raceId passado em castVote() bate com o
-    // raceId usado para gerar a prova — impedindo reutilização cross-cargo.
-    // Dummy constraint obrigatório para evitar under-constrained signal.
+    // race_id: já é constrangido via nullifierHasher.inputs[2] <== race_id,
+    // portanto NÃO é under-constrained. Este dummy constraint adicional é
+    // mantido como defesa em profundidade (belt-and-suspenders) — se futuras
+    // refatorações removerem o nullifier, o sinal continua protegido.
+    // Custo: apenas 1 constraint extra.
     signal race_id_squared;
     race_id_squared <== race_id * race_id;
 }
