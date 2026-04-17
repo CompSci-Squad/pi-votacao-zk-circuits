@@ -62,7 +62,19 @@ describe("VoterProof — ZK voting circuit", function () {
     try {
       const w = await circuit.calculateWitness(input, true);
       await circuit.checkConstraints(w);
-    } catch {
+    } catch (err) {
+      const errMsg = (err.message || err.toString()).toLowerCase();
+      const isCircuitError =
+        errMsg.includes("constraint") ||
+        errMsg.includes("assert") ||
+        errMsg.includes("witness") ||
+        errMsg.includes("not satisfy") ||
+        errMsg.includes("error in template");
+      if (!isCircuitError) {
+        throw new Error(
+          `Expected circuit constraint/witness error, but got unexpected error: ${err.message || err}`
+        );
+      }
       threw = true;
     }
     expect(threw, message || "Expected witness/constraint failure").to.equal(true);
@@ -226,22 +238,70 @@ describe("VoterProof — ZK voting circuit", function () {
   // 5. NULLIFIER DISTINCTNESS
   // ══════════════════════════════════════════════════════════════════════════════
   describe("5. Nullifier distinctness", function () {
-    it("different race_id → different nullifier for same voter", function () {
-      const null1 = poseidon([voterIds[0], ELECTION_ID, 1n]);
-      const null2 = poseidon([voterIds[0], ELECTION_ID, 2n]);
-      expect(F.toString(null1)).to.not.equal(F.toString(null2));
+    it("different race_id → different nullifier for same voter (on-circuit)", async function () {
+      const input1 = buildValidInput({
+        poseidon, F, tree, voterIds,
+        voterIndex: 0,
+        electionId: ELECTION_ID,
+        raceId: 1n,
+        candidateId: DEFAULT_CANDIDATE_ID,
+      });
+      await expectWitnessSuccess(input1);
+
+      const input2 = buildValidInput({
+        poseidon, F, tree, voterIds,
+        voterIndex: 0,
+        electionId: ELECTION_ID,
+        raceId: 2n,
+        candidateId: DEFAULT_CANDIDATE_ID,
+      });
+      await expectWitnessSuccess(input2);
+
+      expect(input1.nullifier_hash).to.not.equal(input2.nullifier_hash);
     });
 
-    it("different election_id → different nullifier for same voter", function () {
-      const null1 = poseidon([voterIds[0], 1n, RACE_ID]);
-      const null2 = poseidon([voterIds[0], 2n, RACE_ID]);
-      expect(F.toString(null1)).to.not.equal(F.toString(null2));
+    it("different election_id → different nullifier for same voter (on-circuit)", async function () {
+      const input1 = buildValidInput({
+        poseidon, F, tree, voterIds,
+        voterIndex: 0,
+        electionId: 1n,
+        raceId: RACE_ID,
+        candidateId: DEFAULT_CANDIDATE_ID,
+      });
+      await expectWitnessSuccess(input1);
+
+      const input2 = buildValidInput({
+        poseidon, F, tree, voterIds,
+        voterIndex: 0,
+        electionId: 2n,
+        raceId: RACE_ID,
+        candidateId: DEFAULT_CANDIDATE_ID,
+      });
+      await expectWitnessSuccess(input2);
+
+      expect(input1.nullifier_hash).to.not.equal(input2.nullifier_hash);
     });
 
-    it("different voter_id → different nullifier for same election/race", function () {
-      const null1 = poseidon([voterIds[0], ELECTION_ID, RACE_ID]);
-      const null2 = poseidon([voterIds[1], ELECTION_ID, RACE_ID]);
-      expect(F.toString(null1)).to.not.equal(F.toString(null2));
+    it("different voter_id → different nullifier for same election/race (on-circuit)", async function () {
+      const input1 = buildValidInput({
+        poseidon, F, tree, voterIds,
+        voterIndex: 0,
+        electionId: ELECTION_ID,
+        raceId: RACE_ID,
+        candidateId: DEFAULT_CANDIDATE_ID,
+      });
+      await expectWitnessSuccess(input1);
+
+      const input2 = buildValidInput({
+        poseidon, F, tree, voterIds,
+        voterIndex: 1,
+        electionId: ELECTION_ID,
+        raceId: RACE_ID,
+        candidateId: DEFAULT_CANDIDATE_ID,
+      });
+      await expectWitnessSuccess(input2);
+
+      expect(input1.nullifier_hash).to.not.equal(input2.nullifier_hash);
     });
   });
 

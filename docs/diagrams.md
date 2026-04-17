@@ -144,10 +144,19 @@ graph TD
     N10["Poseidon(N00, N01)"]
     N11["Poseidon(N02, N03)"]
 
-    N00["Poseidon(L0, L1)"]
-    N01["Poseidon(L2, L3)"]
-    N02["Poseidon(L4, L5)"]
-    N03["Poseidon(L6, L7)"]
+    N00["Poseidon(N000, N001)"]
+    N01["Poseidon(N002, N003)"]
+    N02["Poseidon(N004, N005)"]
+    N03["Poseidon(N006, N007)"]
+
+    N000["Poseidon(L0, L1)"]
+    N001["Poseidon(L2, L3)"]
+    N002["Poseidon(L4, L5)"]
+    N003["Poseidon(L6, L7)"]
+    N004["Poseidon(L8, L9)"]
+    N005["Poseidon(L10, L11)"]
+    N006["Poseidon(L12, L13)"]
+    N007["Poseidon(L14, L15)"]
 
     L0["Poseidon(voter_0)<br/>12345678901"]
     L1["Poseidon(voter_1)<br/>98765432100"]
@@ -155,10 +164,10 @@ graph TD
     L3["Poseidon(voter_3)<br/>55566677788"]
     L4["..."]
     L5["..."]
-    L6["..."]
-    L7["..."]
-    L8["Poseidon(voter_14)<br/>21314151617"]
-    L9["F.zero<br/>(padding)"]
+    L12["..."]
+    L13["..."]
+    L14["Poseidon(voter_14)<br/>21314151617"]
+    L15["F.zero<br/>(padding)"]
 
     ROOT --> N10
     ROOT --> N11
@@ -166,17 +175,27 @@ graph TD
     N10 --> N01
     N11 --> N02
     N11 --> N03
-    N00 --> L0
-    N00 --> L1
-    N01 --> L2
-    N01 --> L3
-    N02 --> L4
-    N02 --> L5
-    N03 --> L6
-    N03 --> L7
+    N00 --> N000
+    N00 --> N001
+    N01 --> N002
+    N01 --> N003
+    N02 --> N004
+    N02 --> N005
+    N03 --> N006
+    N03 --> N007
+    N000 --> L0
+    N000 --> L1
+    N001 --> L2
+    N001 --> L3
+    N002 --> L4
+    N002 --> L5
+    N005 --> L12
+    N005 --> L13
+    N006 --> L14
+    N007 --> L15
 
     style ROOT fill:#ff6b6b,stroke:#333,color:#fff
-    style L9 fill:#95afc0,stroke:#333
+    style L15 fill:#95afc0,stroke:#333
 ```
 
 ---

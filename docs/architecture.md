@@ -57,30 +57,50 @@ flowchart LR
 ```mermaid
 graph TD
     ROOT["Root (pubSignals[0])"]
-    H01["Poseidon(H0, H1)"]
-    H23["Poseidon(H2, H3)"]
-    H0["Poseidon(L0, L1)"]
-    H1["Poseidon(L2, L3)"]
-    H2["Poseidon(L4, L5)"]
-    H3["Poseidon(L6, L7)"]
+    H_01["Poseidon(H_0, H_1)"]
+    H_23["Poseidon(H_2, H_3)"]
+    H_0["Poseidon(H_00, H_01)"]
+    H_1["Poseidon(H_02, H_03)"]
+    H_2["Poseidon(H_04, H_05)"]
+    H_3["Poseidon(H_06, H_07)"]
+    H_00["Poseidon(L0, L1)"]
+    H_01b["Poseidon(L2, L3)"]
+    H_02["Poseidon(L4, L5)"]
+    H_03["Poseidon(L6, L7)"]
+    H_04["Poseidon(L8, L9)"]
+    H_05["Poseidon(L10, L11)"]
+    H_06["Poseidon(L12, L13)"]
+    H_07["Poseidon(L14, L15)"]
 
     L0["Poseidon(voter_0)"]
     L1["Poseidon(voter_1)"]
     L2["Poseidon(voter_2)"]
+    L3["Poseidon(voter_3)"]
     LN["..."]
-    L15["Poseidon(voter_15)"]
+    L14["Poseidon(voter_14)"]
+    L15["F.zero (padding)"]
 
-    ROOT --> H01
-    ROOT --> H23
-    H01 --> H0
-    H01 --> H1
-    H23 --> H2
-    H23 --> H3
-    H0 --> L0
-    H0 --> L1
-    H1 --> L2
-    H1 --> LN
-    H2 --> L15
+    ROOT --> H_01
+    ROOT --> H_23
+    H_01 --> H_0
+    H_01 --> H_1
+    H_23 --> H_2
+    H_23 --> H_3
+    H_0 --> H_00
+    H_0 --> H_01b
+    H_1 --> H_02
+    H_1 --> H_03
+    H_2 --> H_04
+    H_2 --> H_05
+    H_3 --> H_06
+    H_3 --> H_07
+    H_00 --> L0
+    H_00 --> L1
+    H_01b --> L2
+    H_01b --> L3
+    H_02 --> LN
+    H_06 --> L14
+    H_07 --> L15
 ```
 
 Profundidade: **4** → suporta até **16 folhas** (15 eleitores + 1 padding zero).
@@ -131,6 +151,8 @@ nullifier = Poseidon(voter_id, election_id, race_id)
 | Tamanho da prova | ~780 bytes | ~192 bytes |
 | Tempo de verificação | ~8ms | ~4ms |
 | Adequação ao PoC | **Alta** — sem necessidade de coordenar cerimônia | Baixa — complexidade operacional |
+
+> **Nota de segurança (BN254):** A curva BN254 oferece ~100 bits de segurança (não 128) após ataques exTNFS (Kim-Barbulescu, 2015). Suficiente para PoC acadêmica, mas produção crítica requer migração para BLS12-381. Ver [security.md](security.md) para detalhes.
 
 ---
 

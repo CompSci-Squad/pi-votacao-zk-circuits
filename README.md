@@ -38,18 +38,25 @@ votacao-zk-circuits/
 │   ├── voter_proof.zkey            # Chave de prova PLONK
 │   ├── verification_key.json       # Chave de verificação
 │   └── Verifier.sol                # Contrato verificador Ethereum
+├── docs/
+│   ├── architecture.md             # Arquitetura detalhada do circuito
+│   ├── diagrams.md                 # Diagramas Mermaid (fluxo, Merkle, PLONK)
+│   ├── IMPLEMENTATION_PLAN.md      # Plano de implementação original
+│   ├── security.md                 # Modelo de ameaça e invariantes de segurança
+│   └── testing.md                  # Estratégia e infraestrutura de testes
 ├── scripts/
 │   ├── 01_compile.sh               # Compila o circuito
 │   ├── 02_setup.sh                 # Trusted setup PLONK
 │   ├── 03_export_verifier.sh       # Exporta Verifier.sol
 │   └── 04_test_proof.js            # Gera/verifica prova de teste
 ├── test/
-│   ├── generate_test_inputs.js     # Utilitário: Merkle tree + inputs de teste
-│   └── voter_proof.test.js         # Testes automatizados (Mocha + Chai)
+│   ├── helpers/                    # Utilitários de teste (Poseidon, Merkle, Input)
+│   └── voter_proof.test.js         # Suite de 26 testes (Mocha + circom_tester)
 ├── inputs/
 │   └── example_input.json          # Input de exemplo com valores Poseidon reais
 ├── ptau/
 │   └── README.md                   # Instruções para Powers of Tau
+├── Makefile                        # Atalhos: make compile, make test, make clean
 ├── package.json
 ├── .gitignore
 └── README.md
@@ -247,6 +254,7 @@ O arquivo `powersOfTau28_hez_final_14.ptau` suporta até 2^14 = 16.384 constrain
 | **Powers of Tau** | A cerimônia utilizada (Hermez) não foi conduzida independentemente pelo grupo. |
 | **Escopo PoC** | Árvore de profundidade 4 (máx. 16 eleitores). Para produção, aumentar para 20+ (>1M eleitores). |
 | **Validação de candidato** | O circuito aceita qualquer `candidate_id`; a validação de intervalo é responsabilidade exclusiva do smart contract. |
+| **Re-identificação via nullifier** | Se o `voter_id` for previsível (ex.: CPFs sequenciais), um adversário pode pré-computar `Poseidon(CPF, election_id, race_id)` e correlacionar nullifiers a identidades. Mitigação: salt ou compromisso prévio (fora do escopo do PoC). |
 
 ---
 
