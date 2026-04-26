@@ -10,7 +10,9 @@ const TEST_VOTER_IDS = [
 ];
 
 const DEFAULT_ELECTION_ID = 1n;
-const DEFAULT_RACE_ID = 1n;
+// PoC pinned to race_id = 0 to match POC_RACE_ID in pi-votacao-zk-blockchain.
+// Tests that explicitly need raceId != 0 (distinctness, relay-attack) pass it inline.
+const DEFAULT_RACE_ID = 0n;
 const DEFAULT_CANDIDATE_ID = 13n;
 
 /**

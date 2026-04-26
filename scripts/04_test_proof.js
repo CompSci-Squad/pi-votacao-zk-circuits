@@ -80,7 +80,7 @@ async function main() {
   const TEST_INDEX = 0;
   const voterId = voterIds[TEST_INDEX];
   const electionId = 1n;
-  const raceId = 1n;    // cargo (vinculado ao nullifier como sinal privado)
+  const raceId = 0n;    // cargo (vinculado ao nullifier) — PoC pinned to 0 (matches POC_RACE_ID on-chain)
   const candidateId = 13n; // candidato número 13
 
   const { pathElements, pathIndices } = getMerkleProof(tree, TEST_INDEX);

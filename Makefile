@@ -15,7 +15,7 @@
 #   make artifacts    — copy deployment artifacts to artifacts/
 # =============================================================================
 
-.PHONY: all compile setup test test-full lint export clean artifacts install \
+.PHONY: all compile setup test test-full lint export clean artifacts checksums install \
         download-ptau inspect help
 
 # Default target
@@ -81,13 +81,25 @@ inspect:
 	@chmod +x scripts/inspect_r1cs.sh
 	./scripts/inspect_r1cs.sh
 
+# -- Checksums (provenance: circuit commit → artifacts) --
+checksums: build/voter_proof_js/voter_proof.wasm build/voter_proof.zkey build/verification_key.json build/Verifier.sol
+	@cd build && ( \
+	  sha256sum voter_proof_js/voter_proof.wasm | awk '{print $$1"  voter_proof.wasm"}'; \
+	  sha256sum voter_proof.zkey      | awk '{print $$1"  voter_proof.zkey"}'; \
+	  sha256sum verification_key.json | awk '{print $$1"  verification_key.json"}'; \
+	  sha256sum Verifier.sol          | awk '{print $$1"  Verifier.sol"}' \
+	) > CHECKSUMS.txt
+	@echo "✅ build/CHECKSUMS.txt written:"
+	@sed 's/^/   /' build/CHECKSUMS.txt
+
 # -- Artifacts for distribution --
-artifacts: build/voter_proof_js/voter_proof.wasm build/voter_proof.zkey build/verification_key.json build/Verifier.sol
+artifacts: build/voter_proof_js/voter_proof.wasm build/voter_proof.zkey build/verification_key.json build/Verifier.sol checksums
 	@mkdir -p artifacts
 	cp build/voter_proof_js/voter_proof.wasm artifacts/
 	cp build/voter_proof.zkey artifacts/
 	cp build/verification_key.json artifacts/
 	cp build/Verifier.sol artifacts/
+	cp build/CHECKSUMS.txt artifacts/
 	@echo ""
 	@echo "✅ Artefatos copiados para artifacts/"
 	@echo "   → Verifier.sol        → blockchain repo"

@@ -24,6 +24,11 @@ npx snarkjs zkey export solidityverifier \
     "$BUILD_DIR/voter_proof.zkey" \
     "$VERIFIER_OUT"
 
+# Strip the dead `import "hardhat/console.sol";` line that some snarkjs
+# revisions inject. The import is unused (no console.log calls in the file)
+# and breaks compilation under non-Hardhat toolchains (e.g. Foundry).
+sed -i '/^import "hardhat\/console\.sol";$/d' "$VERIFIER_OUT"
+
 echo ""
 echo "✅ Verifier.sol gerado em:"
 echo "   $VERIFIER_OUT"
@@ -31,7 +36,7 @@ echo ""
 echo "=== Integração com outros repositórios ==="
 echo ""
 echo "📦 Repositório blockchain (votacao-zk-blockchain):"
-echo "   cp $VERIFIER_OUT <caminho>/contracts/Verifier.sol"
+echo "   cp $VERIFIER_OUT <caminho>/src/Verifier.sol"
 echo ""
 echo "📦 Repositório frontend (votacao-zk-frontend):"
 echo "   cp $BUILD_DIR/voter_proof_js/voter_proof.wasm <caminho>/public/circuits/"
