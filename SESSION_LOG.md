@@ -105,3 +105,19 @@ Mirrored from root [SESSION_LOG.md](../SESSION_LOG.md) entry of 2026-04-25. Test
 
 ### Blockers
 - None.
+
+---
+
+## Session — 2026-05-06 (integration mirror)
+
+Cross-references root `SESSION_LOG.md` integration session of **2026-05-06**.
+
+### Circuit-side findings
+- **None.** Circuit, build artifacts and Verifier.sol were not touched this session.
+- 13 / 13 integration scenarios in `pi-votacao-zk-blockchain/test/integration/e2e_real_proof.test.js` pass with real PLONK proofs — the existing `voter_proof.circom` and `voter_proof.zkey` correctly produce `nullifier = Poseidon(voter_id, election_id, race_id)` for `race_id ∈ {0, 1, 2}` as the multi-race contract requires.
+
+### Artifact state — UNCHANGED
+- `build/voter_proof.zkey` SHA-256 `e338ebdcd39fe4a27d5bf62d423df93df186b3603165340e95024e4be66e0255`.
+- `build/Verifier.sol` SHA-256 (synced into `pi-votacao-zk-blockchain/src/Verifier.sol`) `fe24c84d00fecee466cf0cb39e824e43af781877e47cbe104aa1e06f063d6944`.
+
+### No action required on this side.
