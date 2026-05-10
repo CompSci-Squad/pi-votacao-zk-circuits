@@ -197,13 +197,13 @@ describe("VoterProof — ZK voting circuit", function () {
   // 4. NULLIFIER BINDING (deterministic)
   // ══════════════════════════════════════════════════════════════════════════════
   describe("4. Nullifier binding", function () {
-    it("same (voter_id, election_id, race_id) always yields same nullifier", function () {
-      const null1 = poseidon([voterIds[0], ELECTION_ID, RACE_ID]);
-      const null2 = poseidon([voterIds[0], ELECTION_ID, RACE_ID]);
+    it("same (voter_id, election_id, race_id, pick_index) always yields same nullifier", function () {
+      const null1 = poseidon([voterIds[0], ELECTION_ID, RACE_ID, 0n]);
+      const null2 = poseidon([voterIds[0], ELECTION_ID, RACE_ID, 0n]);
       expect(F.toString(null1)).to.equal(F.toString(null2));
     });
 
-    it("should reject when nullifier_hash doesn't match Poseidon(voter_id, election_id, race_id)", async function () {
+    it("should reject when nullifier_hash doesn't match Poseidon(voter_id, election_id, race_id, pick_index)", async function () {
       const input = buildValidInput({
         poseidon, F, tree, voterIds,
         voterIndex: 0,
@@ -212,13 +212,13 @@ describe("VoterProof — ZK voting circuit", function () {
         candidateId: DEFAULT_CANDIDATE_ID,
       });
 
-      const wrongNullifier = poseidon([voterIds[1], ELECTION_ID, RACE_ID]);
+      const wrongNullifier = poseidon([voterIds[1], ELECTION_ID, RACE_ID, 0n]);
       input.nullifier_hash = F.toString(wrongNullifier);
 
       await expectWitnessFailure(input, "Should reject mismatched nullifier_hash");
     });
 
-    it("should reject when nullifier uses only 2 inputs (missing race_id)", async function () {
+    it("should reject when nullifier uses only 3 inputs (missing pick_index)", async function () {
       const input = buildValidInput({
         poseidon, F, tree, voterIds,
         voterIndex: 0,
@@ -227,10 +227,10 @@ describe("VoterProof — ZK voting circuit", function () {
         candidateId: DEFAULT_CANDIDATE_ID,
       });
 
-      const twoInputNull = poseidon([voterIds[0], ELECTION_ID]);
-      input.nullifier_hash = F.toString(twoInputNull);
+      const threeInputNull = poseidon([voterIds[0], ELECTION_ID, RACE_ID]);
+      input.nullifier_hash = F.toString(threeInputNull);
 
-      await expectWitnessFailure(input, "Should reject 2-input nullifier (missing race_id)");
+      await expectWitnessFailure(input, "Should reject 3-input nullifier (missing pick_index)");
     });
   });
 
@@ -337,10 +337,52 @@ describe("VoterProof — ZK voting circuit", function () {
         candidateId: DEFAULT_CANDIDATE_ID,
       });
 
-      const wrongNull = poseidon([voterIds[0], ELECTION_ID, 2n]);
+      const wrongNull = poseidon([voterIds[0], ELECTION_ID, 2n, 0n]);
       input.nullifier_hash = F.toString(wrongNull);
 
       await expectWitnessFailure(input, "Should reject cross-race nullifier");
+    });
+
+    it("different pick_index → different nullifier for same voter/race (multi-pick races)", async function () {
+      const input1 = buildValidInput({
+        poseidon, F, tree, voterIds,
+        voterIndex: 0,
+        electionId: ELECTION_ID,
+        raceId: 1n,
+        candidateId: DEFAULT_CANDIDATE_ID,
+        pickIndex: 0n,
+      });
+      await expectWitnessSuccess(input1);
+
+      const input2 = buildValidInput({
+        poseidon, F, tree, voterIds,
+        voterIndex: 0,
+        electionId: ELECTION_ID,
+        raceId: 1n,
+        candidateId: DEFAULT_CANDIDATE_ID,
+        pickIndex: 1n,
+      });
+      await expectWitnessSuccess(input2);
+
+      expect(input1.nullifier_hash).to.not.equal(input2.nullifier_hash);
+    });
+
+    it("replaying same proof with tampered pick_index should fail", async function () {
+      const input = buildValidInput({
+        poseidon, F, tree, voterIds,
+        voterIndex: 0,
+        electionId: ELECTION_ID,
+        raceId: 1n,
+        candidateId: DEFAULT_CANDIDATE_ID,
+        pickIndex: 0n,
+      });
+      await expectWitnessSuccess(input);
+
+      const tampered = { ...input, pick_index: "1" };
+      await expectWitnessFailure(
+        tampered,
+        "Should reject when pick_index is changed but nullifier stays the same"
+      );
     });
   });
 
@@ -394,7 +436,7 @@ describe("VoterProof — ZK voting circuit", function () {
       // 2^41 breaks Num2Bits(40)
       const hugeVoterId = (1n << 41n).toString();
       input.voter_id = hugeVoterId;
-      input.nullifier_hash = F.toString(poseidon([BigInt(hugeVoterId), ELECTION_ID, RACE_ID]));
+      input.nullifier_hash = F.toString(poseidon([BigInt(hugeVoterId), ELECTION_ID, RACE_ID, 0n]));
 
       await expectWitnessFailure(input, "Should reject voter_id > 2^40");
     });
@@ -438,7 +480,7 @@ describe("VoterProof — ZK voting circuit", function () {
   describe("10. Cross-verification with circomlibjs", function () {
     it("nullifier computed off-circuit matches circuit expectation", async function () {
       const voterId = voterIds[0];
-      const offCircuitNullifier = F.toString(poseidon([voterId, ELECTION_ID, RACE_ID]));
+      const offCircuitNullifier = F.toString(poseidon([voterId, ELECTION_ID, RACE_ID, 0n]));
 
       const input = buildValidInput({
         poseidon, F, tree, voterIds,
@@ -485,11 +527,12 @@ describe("VoterProof — ZK voting circuit", function () {
     it("unregistered voter (voter_id not in tree) should fail", async function () {
       const intruder = 99999999999n;
       const { pathElements, pathIndices } = buildMerkleProof(tree, 0);
-      const nullifier = poseidon([intruder, ELECTION_ID, RACE_ID]);
+      const nullifier = poseidon([intruder, ELECTION_ID, RACE_ID, 0n]);
 
       const input = {
         voter_id: intruder.toString(),
         race_id: RACE_ID.toString(),
+        pick_index: "0",
         merkle_path: pathElements.map((x) => F.toString(x)),
         merkle_path_indices: pathIndices,
         merkle_root: F.toString(root),
@@ -503,11 +546,12 @@ describe("VoterProof — ZK voting circuit", function () {
 
     it("voter_id = 0 should fail (not in tree)", async function () {
       const { pathElements, pathIndices } = buildMerkleProof(tree, 0);
-      const nullifier = poseidon([0n, ELECTION_ID, RACE_ID]);
+      const nullifier = poseidon([0n, ELECTION_ID, RACE_ID, 0n]);
 
       const input = {
         voter_id: "0",
         race_id: RACE_ID.toString(),
+        pick_index: "0",
         merkle_path: pathElements.map((x) => F.toString(x)),
         merkle_path_indices: pathIndices,
         merkle_root: F.toString(root),

@@ -6,12 +6,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 PTAU_DIR="$PROJECT_DIR/ptau"
-PTAU_FILE="$PTAU_DIR/powersOfTau28_hez_final_14.ptau"
-PTAU_URL="https://hermez.s3-eu-west-1.amazonaws.com/powersOfTau28_hez_final_14.ptau"
-# Approximate expected size: ~120MB (exact: 124,723,477 bytes)
-EXPECTED_MIN_SIZE=120000000
+PTAU_FILE="$PTAU_DIR/powersOfTau28_hez_final_15.ptau"
+PTAU_URL="https://storage.googleapis.com/zkevm/ptau/powersOfTau28_hez_final_15.ptau"
+# Approximate expected size: ~38MB (exact: 37,831,832 bytes)
+EXPECTED_MIN_SIZE=37000000
 
-echo "=== Download Powers of Tau (Hermez, 2^14) ==="
+echo "=== Download Powers of Tau (Hermez via zkevm mirror, 2^15) ==="
 
 mkdir -p "$PTAU_DIR"
 
@@ -27,7 +27,7 @@ if [ -f "$PTAU_FILE" ]; then
     fi
 fi
 
-echo "Baixando Powers of Tau 2^14 (~120 MB)..."
+echo "Baixando Powers of Tau 2^15 (~38 MB)..."
 echo "URL: $PTAU_URL"
 echo ""
 

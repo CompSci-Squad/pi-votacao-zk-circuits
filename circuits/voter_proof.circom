@@ -12,10 +12,13 @@ include "circomlib/circuits/bitify.circom";
  * Garante simultaneamente, sem revelar o voter_id:
  *   1. AUTORIZAÇÃO  – Poseidon(voter_id) pertence à Merkle tree de raiz merkle_root.
  *   2. INTEGRIDADE  – O hash da folha foi calculado corretamente pelo próprio circuito.
- *   3. UNICIDADE    – nullifier_hash === Poseidon(voter_id, election_id, race_id), impedindo voto
- *                     duplo dentro do mesmo cargo — um eleitor pode votar em cargos distintos.
- *   4. VINCULAÇÃO   – race_id é sinal público, impossibilitando que um relayer reutilize uma
- *                     prova gerada para cargo A submetendo-a ao cargo B.
+ *   3. UNICIDADE    – nullifier_hash === Poseidon(voter_id, election_id, race_id, pick_index),
+ *                     impedindo voto duplo dentro do par (cargo, escolha). Um eleitor pode
+ *                     votar em cargos distintos (race_id diferente) e, em cargos com múltiplas
+ *                     escolhas (maxPicks > 1), em índices diferentes (pick_index diferente).
+ *   4. VINCULAÇÃO   – race_id e pick_index são sinais públicos, impossibilitando que um relayer
+ *                     reutilize uma prova gerada para cargo A submetendo-a ao cargo B, ou que
+ *                     replique a mesma escolha em índices diferentes.
  *
  * Parâmetros:
  *   depth – profundidade da árvore de Merkle (4 → suporta até 16 eleitores)
@@ -28,17 +31,19 @@ template VoterProof(depth) {
     signal input merkle_path_indices[depth];  // 0 = filho esquerdo, 1 = filho direito
 
     // ── Inputs públicos (enviados ao contrato Ethereum) ──────────────────────
-    // Ordem canônica — deve bater com IVerifier.sol e VotingContract.castVote():
+    // Ordem canônica — deve bater com IVerifier.sol e VotingEvent.castVote():
     //   pubSignals[0] = merkle_root
     //   pubSignals[1] = nullifier_hash
     //   pubSignals[2] = candidate_id
     //   pubSignals[3] = election_id
     //   pubSignals[4] = race_id
+    //   pubSignals[5] = pick_index
     signal input merkle_root;     // Raiz da árvore de eleitores autorizados
-    signal input nullifier_hash;  // Poseidon(voter_id, election_id, race_id) — anti-voto-duplo
+    signal input nullifier_hash;  // Poseidon(voter_id, election_id, race_id, pick_index)
     signal input candidate_id;    // Candidato (0=branco, 999=nulo, ou número real)
     signal input election_id;     // Identificador único da eleição
     signal input race_id;         // Identificador do cargo (ex.: 1=Presidente) — PÚBLICO
+    signal input pick_index;      // 0..maxPicks-1 dentro do cargo — PÚBLICO
 
     // ── 1. Calcular voter_hash = Poseidon(voter_id) ──────────────────────────
     //
@@ -95,13 +100,14 @@ template VoterProof(depth) {
     merkle_root === levelHashes[depth];
 
     // ── 4–5. Calcular e verificar o nullifier ────────────────────────────────
-    // Fórmula: Poseidon(voter_id, election_id, race_id)
-    // Vincula o nullifier ao cargo específico — o mesmo eleitor pode votar em
-    // cargos distintos (race_id diferente) sem ser bloqueado como voto duplo.
-    component nullifierHasher = Poseidon(3);
+    // Fórmula: Poseidon(voter_id, election_id, race_id, pick_index)
+    // Vincula o nullifier ao par (cargo, escolha) — em cargos com maxPicks > 1
+    // o mesmo eleitor produz K nullifiers distintos (um por pick_index ∈ 0..K-1).
+    component nullifierHasher = Poseidon(4);
     nullifierHasher.inputs[0] <== voter_id;
     nullifierHasher.inputs[1] <== election_id;
     nullifierHasher.inputs[2] <== race_id;
+    nullifierHasher.inputs[3] <== pick_index;
 
     nullifier_hash === nullifierHasher.out;
 
@@ -121,8 +127,13 @@ template VoterProof(depth) {
     // Custo: apenas 1 constraint extra.
     signal race_id_squared;
     race_id_squared <== race_id * race_id;
+
+    // pick_index: já é constrangido via nullifierHasher.inputs[3] <== pick_index.
+    // Mesmo padrão belt-and-suspenders aplicado a race_id.
+    signal pick_index_squared;
+    pick_index_squared <== pick_index * pick_index;
 }
 
 // Instância principal com profundidade 4 (suporta até 16 eleitores)
-// 5 sinais públicos: merkle_root, nullifier_hash, candidate_id, election_id, race_id
-component main {public [merkle_root, nullifier_hash, candidate_id, election_id, race_id]} = VoterProof(4);
+// 6 sinais públicos: merkle_root, nullifier_hash, candidate_id, election_id, race_id, pick_index
+component main {public [merkle_root, nullifier_hash, candidate_id, election_id, race_id, pick_index]} = VoterProof(4);

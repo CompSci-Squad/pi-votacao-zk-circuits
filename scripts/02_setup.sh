@@ -7,8 +7,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 BUILD_DIR="$PROJECT_DIR/build"
 PTAU_DIR="$PROJECT_DIR/ptau"
-PTAU_FILE="$PTAU_DIR/powersOfTau28_hez_final_14.ptau"
-PTAU_URL="https://hermez.s3-eu-west-1.amazonaws.com/powersOfTau28_hez_final_14.ptau"
+PTAU_FILE="$PTAU_DIR/powersOfTau28_hez_final_15.ptau"
+PTAU_URL="https://storage.googleapis.com/zkevm/ptau/powersOfTau28_hez_final_15.ptau"
 
 echo "=== 02 – Trusted Setup PLONK ==="
 echo ""
@@ -24,7 +24,7 @@ fi
 if [ -f "$PTAU_FILE" ]; then
     echo "✅ Powers of Tau já presente: $PTAU_FILE"
 else
-    echo "Baixando Powers of Tau Hermez (2^14, ~120 MB)..."
+    echo "Baixando Powers of Tau Hermez (2^15, ~38 MB)..."
     mkdir -p "$PTAU_DIR"
     if command -v curl &> /dev/null; then
         curl -L --progress-bar "$PTAU_URL" -o "$PTAU_FILE"

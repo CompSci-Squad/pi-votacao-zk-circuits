@@ -14,19 +14,26 @@ const DEFAULT_ELECTION_ID = 1n;
 // Tests that explicitly need raceId != 0 (distinctness, relay-attack) pass it inline.
 const DEFAULT_RACE_ID = 0n;
 const DEFAULT_CANDIDATE_ID = 13n;
+// Single-pick races (maxPicks=1) always use pick_index = 0.
+const DEFAULT_PICK_INDEX = 0n;
 
 /**
  * Builds a valid circuit input for the voter at `voterIndex`.
+ * Nullifier formula: Poseidon(voter_id, election_id, race_id, pick_index).
  */
-function buildValidInput({ poseidon, F, tree, voterIds, voterIndex, electionId, raceId, candidateId }) {
+function buildValidInput({
+  poseidon, F, tree, voterIds, voterIndex,
+  electionId, raceId, candidateId, pickIndex = DEFAULT_PICK_INDEX,
+}) {
   const voterId = voterIds[voterIndex];
   const { pathElements, pathIndices } = buildMerkleProof(tree, voterIndex);
-  const nullifier = poseidon([voterId, electionId, raceId]);
+  const nullifier = poseidon([voterId, electionId, raceId, pickIndex]);
   const root = tree[tree.length - 1][0];
 
   return {
     voter_id: voterId.toString(),
     race_id: raceId.toString(),
+    pick_index: pickIndex.toString(),
     merkle_path: pathElements.map((x) => F.toString(x)),
     merkle_path_indices: pathIndices,
     merkle_root: F.toString(root),
@@ -41,5 +48,6 @@ module.exports = {
   DEFAULT_ELECTION_ID,
   DEFAULT_RACE_ID,
   DEFAULT_CANDIDATE_ID,
+  DEFAULT_PICK_INDEX,
   buildValidInput,
 };

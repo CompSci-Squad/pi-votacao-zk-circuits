@@ -121,3 +121,55 @@ Cross-references root `SESSION_LOG.md` integration session of **2026-05-06**.
 - `build/Verifier.sol` SHA-256 (synced into `pi-votacao-zk-blockchain/src/Verifier.sol`) `fe24c84d00fecee466cf0cb39e824e43af781877e47cbe104aa1e06f063d6944`.
 
 ### No action required on this side.
+
+---
+
+## Mirrored from root integration session — 2026-05-07
+
+See [../SESSION_LOG.md](../SESSION_LOG.md) for the full integration entry.
+
+### Circuit-side findings
+**No circuit changes were required.** The integration session confirmed:
+
+- `voter_proof.zkey` SHA-256 unchanged: `e338ebdc…0255`.
+- `voter_proof.wasm` SHA-256 unchanged: `0ca68222…2261f`.
+- `verification_key.json` SHA-256 unchanged: `1dbc0a64…6fbc`.
+- The exported `Verifier.sol` (SHA `fe24c84d…6944`) still matches what
+  the contract repo deploys; integration suite verified 13 / 13 real
+  PLONK proofs accept on-chain.
+- A live VoteCast tx was successfully cast on the dockerized anvil
+  using a fresh proof generated via this repo's `voter_proof_js/`
+  + `snarkjs` PLONK pipeline (see
+  `../pi-votacao-zk-blockchain/reports/runtime/OTTERSCAN_DEMO.md`).
+
+### Cross-repo invariants confirmed
+- 5 public-signal layout `[merkle_root, nullifier_hash, candidate_id,
+  election_id, race_id]` matches what `VotingContract.castVote` reads.
+- Off-circuit nullifier computed by `circomlibjs` Poseidon with
+  `(voter_id, election_id, race_id)` inputs equals the in-circuit
+  output (verified by all 13 integration tests).
+
+### No action required in this repo.
+
+
+---
+
+## Session — 2026-05-10 (integration mirror)
+
+> Mirrored from root [SESSION_LOG.md](../SESSION_LOG.md) — *Integration session — 2026-05-10*. Circuit-side findings only.
+
+### Circuit changes
+- New public input `pick_index`. Total public inputs: 5 → **6** (`merkle_root, nullifier_hash, candidate_id, election_id, race_id, pick_index`).
+- Nullifier formula: `Poseidon(voter_id, election_id, race_id)` → **`Poseidon(voter_id, election_id, race_id, pick_index)`** (4 inputs).
+- `pick_index` deliberately **not range-constrained inside the circuit** — enforced on-chain by `race.maxPicks`.
+
+### Build artifacts
+- `build/voter_proof.zkey` — sha256 `cf3d4e71bffb38a1fb5135735bc9985ad9786fa8a89069bbf7f8b97e23c4f75c`
+- `build/Verifier.sol` — sha256 `7d4e6e86f3d39e019687837782873c39e25d8f83478014eef0f8cc1dc538dff3` (synced into blockchain repo)
+
+### Test results
+- Circuit unit tests: **28/28 PASS** (new pick_index scenarios cover happy path + nullifier distinctness across pickIndex values).
+- Off-circuit `circomlibjs` Poseidon(4) reference matches witness output.
+
+### Files removed
+- `test/voter_proof.test.js.bak` (pre-pick_index backup superseded by current test file).
